@@ -3,8 +3,7 @@ const router = express.Router();
 const User = require('../models/User');
 const Menu = require('../models/Menu');
 const Attendance = require('../models/Attendance');
-const Expense = require('../models/Expense');
-const bcrypt = require('bcryptjs');
+const expenseRoutes = require('./expenseRoutes'); // Import new expense routes
 
 // Default credentials
 const DEFAULT_CREDENTIALS = {
@@ -17,6 +16,7 @@ const initializeDefaultAdmin = async () => {
   try {
     const existingAdmin = await User.findOne({ email: DEFAULT_CREDENTIALS.email });
     if (!existingAdmin) {
+      const bcrypt = require('bcryptjs');
       const hashedPassword = await bcrypt.hash(DEFAULT_CREDENTIALS.password, 10);
       await User.create({
         name: 'Admin',
@@ -31,21 +31,27 @@ const initializeDefaultAdmin = async () => {
   }
 };
 
-// Login route (without JWT)
+// Test route
+router.get('/test', (req, res) => {
+  res.json({
+    success: true,
+    message: 'API is working',
+    version: '1.0.0',
+    timestamp: new Date().toISOString()
+  });
+});
+
+// Login route
 router.post('/login', async (req, res) => {
   try {
     const { email, password } = req.body;
     
     // Check if using default credentials
     if (email === DEFAULT_CREDENTIALS.email && password === DEFAULT_CREDENTIALS.password) {
-      const user = await User.findOne({ email: DEFAULT_CREDENTIALS.email });
-      if (!user) {
-        await initializeDefaultAdmin();
-      }
+      await initializeDefaultAdmin();
       return res.json({
         success: true,
         user: {
-          _id: user ? user._id : 'default-admin-id',
           name: 'Admin',
           email: DEFAULT_CREDENTIALS.email,
           role: 'admin'
@@ -59,7 +65,8 @@ router.post('/login', async (req, res) => {
       return res.status(401).json({ success: false, message: 'Invalid credentials' });
     }
     
-    const isPasswordValid = await user.comparePassword(password);
+    const bcrypt = require('bcryptjs');
+    const isPasswordValid = await bcrypt.compare(password, user.password);
     if (!isPasswordValid) {
       return res.status(401).json({ success: false, message: 'Invalid credentials' });
     }
@@ -75,7 +82,12 @@ router.post('/login', async (req, res) => {
       }
     });
   } catch (error) {
-    res.status(500).json({ success: false, message: 'Server error' });
+    console.error('Login error:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Server error',
+      error: error.message 
+    });
   }
 });
 
@@ -85,21 +97,44 @@ router.get('/menu', async (req, res) => {
     const menu = await Menu.find().sort({ day: 1 });
     res.json({ success: true, menu });
   } catch (error) {
-    res.status(500).json({ success: false, message: 'Server error' });
+    console.error('Get menu error:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Failed to fetch menu',
+      error: error.message 
+    });
   }
 });
 
 router.post('/menu', async (req, res) => {
   try {
     const { day, breakfast, lunch, dinner } = req.body;
+    
+    if (!day || !breakfast || !lunch || !dinner) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'All fields are required' 
+      });
+    }
+    
     const menuItem = await Menu.findOneAndUpdate(
       { day },
       { breakfast, lunch, dinner },
-      { upsert: true, new: true }
+      { upsert: true, new: true, runValidators: true }
     );
-    res.json({ success: true, menuItem });
+    
+    res.json({ 
+      success: true, 
+      menuItem,
+      message: 'Menu updated successfully'
+    });
   } catch (error) {
-    res.status(500).json({ success: false, message: 'Server error' });
+    console.error('Update menu error:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Failed to update menu',
+      error: error.message 
+    });
   }
 });
 
@@ -116,17 +151,33 @@ router.get('/attendance/:date?', async (req, res) => {
     
     res.json({ success: true, attendance });
   } catch (error) {
-    res.status(500).json({ success: false, message: 'Server error' });
+    console.error('Get attendance error:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Failed to fetch attendance',
+      error: error.message 
+    });
   }
 });
 
 router.post('/attendance', async (req, res) => {
   try {
     const { studentId, status, mealType } = req.body;
+    
+    if (!studentId || !status || !mealType) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'All fields are required' 
+      });
+    }
+    
     const student = await User.findOne({ studentId });
     
     if (!student) {
-      return res.status(404).json({ success: false, message: 'Student not found' });
+      return res.status(404).json({ 
+        success: false, 
+        message: 'Student not found' 
+      });
     }
     
     const attendance = new Attendance({
@@ -137,89 +188,42 @@ router.post('/attendance', async (req, res) => {
     });
     
     await attendance.save();
-    res.json({ success: true, attendance });
-  } catch (error) {
-    if (error.code === 11000) {
-      return res.status(400).json({ success: false, message: 'Attendance already marked for this meal' });
-    }
-    res.status(500).json({ success: false, message: 'Server error' });
-  }
-});
-
-// Expense routes
-router.get('/expenses', async (req, res) => {
-  try {
-    const expenses = await Expense.find()
-      .populate('addedBy', 'name')
-      .sort({ date: -1 });
-    res.json({ success: true, expenses });
-  } catch (error) {
-    res.status(500).json({ success: false, message: 'Server error' });
-  }
-});
-
-router.post('/expenses', async (req, res) => {
-  try {
-    const { description, amount, category } = req.body;
-    const expense = new Expense({
-      description,
-      amount,
-      category,
-      addedBy: req.body.userId || 'default-admin-id',
-      date: new Date()
+    await attendance.populate('student', 'name email');
+    
+    res.json({ 
+      success: true, 
+      attendance,
+      message: 'Attendance marked successfully'
     });
-    
-    await expense.save();
-    res.json({ success: true, expense });
   } catch (error) {
-    res.status(500).json({ success: false, message: 'Server error' });
-  }
-});
-
-router.put('/expenses/:id', async (req, res) => {
-  try {
-    const { id } = req.params;
-    const { description, amount, category } = req.body;
-    
-    const expense = await Expense.findByIdAndUpdate(
-      id,
-      { description, amount, category },
-      { new: true }
-    );
-    
-    if (!expense) {
-      return res.status(404).json({ success: false, message: 'Expense not found' });
-    }
-    
-    res.json({ success: true, expense });
-  } catch (error) {
-    res.status(500).json({ success: false, message: 'Server error' });
-  }
-});
-
-router.delete('/expenses/:id', async (req, res) => {
-  try {
-    const { id } = req.params;
-    const expense = await Expense.findByIdAndDelete(id);
-    
-    if (!expense) {
-      return res.status(404).json({ success: false, message: 'Expense not found' });
-    }
-    
-    res.json({ success: true, message: 'Expense deleted successfully' });
-  } catch (error) {
-    res.status(500).json({ success: false, message: 'Server error' });
+    console.error('Mark attendance error:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Failed to mark attendance',
+      error: error.message 
+    });
   }
 });
 
 // Student routes
 router.get('/students', async (req, res) => {
   try {
-    const students = await User.find({ role: 'student' }).select('-password');
+    const students = await User.find({ role: 'student' })
+      .select('-password')
+      .sort({ name: 1 });
+    
     res.json({ success: true, students });
   } catch (error) {
-    res.status(500).json({ success: false, message: 'Server error' });
+    console.error('Get students error:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Failed to fetch students',
+      error: error.message 
+    });
   }
 });
+
+// ========== USE NEW EXPENSE ROUTES ==========
+router.use('/expenses', expenseRoutes);
 
 module.exports = router;
